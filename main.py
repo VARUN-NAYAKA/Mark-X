@@ -479,6 +479,7 @@ class LeoLive:
         self.audio_in_queue = None
         self.out_queue      = None
         self._loop          = None
+        self._running_tasks = {}   # task_name -> asyncio.Task for parallel exec
 
     def speak(self, text: str):
         """Thread-safe speak — any thread can call this."""
@@ -677,7 +678,11 @@ class LeoLive:
             
         except Exception as e:
             result = f"Tool '{name}' failed: {e}"
+            print(f"[LEO] ❌ Tool error (non-fatal): {e}")
             traceback.print_exc()
+        finally:
+            # Remove from running tasks
+            self._running_tasks.pop(name, None)
 
         print(f"[LEO] 📤 {name} → {result[:80]}")
 
@@ -781,14 +786,34 @@ class LeoLive:
                                 ).start()
 
                     if response.tool_call:
-                        fn_responses = []
-                        for fc in response.tool_call.function_calls:
-                            print(f"[LEO] 📞 Tool call: {fc.name}")
-                            fr = await self._execute_tool(fc)
-                            fn_responses.append(fr)
-                        await self.session.send_tool_response(
-                            function_responses=fn_responses
+                        # Run tool calls as parallel background tasks
+                        async def _run_tools_parallel(tool_call):
+                            fn_responses = []
+                            for fc in tool_call.function_calls:
+                                print(f"[LEO] 📞 Tool call: {fc.name}")
+                                try:
+                                    fr = await self._execute_tool(fc)
+                                    fn_responses.append(fr)
+                                except Exception as e:
+                                    print(f"[LEO] ❌ Tool {fc.name} crashed: {e}")
+                                    fn_responses.append(types.FunctionResponse(
+                                        id=fc.id,
+                                        name=fc.name,
+                                        response={"result": f"Tool failed: {e}"}
+                                    ))
+                            try:
+                                await self.session.send_tool_response(
+                                    function_responses=fn_responses
+                                )
+                            except Exception as e:
+                                print(f"[LEO] ❌ Failed to send tool response: {e}")
+
+                        task = asyncio.create_task(
+                            _run_tools_parallel(response.tool_call)
                         )
+                        # Track running task
+                        task_name = response.tool_call.function_calls[0].name if response.tool_call.function_calls else "unknown"
+                        self._running_tasks[task_name] = task
 
         except Exception as e:
             print(f"[LEO] ❌ Recv error: {e}")
@@ -828,6 +853,9 @@ class LeoLive:
             http_options={"api_version": "v1beta"}
         )
 
+        backoff = 3
+        max_backoff = 30
+
         while True:
             try:
                 print("[LEO] 🔌 Connecting...")
@@ -841,21 +869,36 @@ class LeoLive:
                     self._loop          = asyncio.get_event_loop() 
                     self.audio_in_queue = asyncio.Queue()
                     self.out_queue      = asyncio.Queue(maxsize=5)
+                    self._running_tasks = {}
 
                     print("[LEO] ✅ Connected.")
                     self.ui.write_log("LEO online.")
+                    backoff = 3  # reset on successful connect
 
                     tg.create_task(self._send_realtime())
                     tg.create_task(self._listen_audio())
                     tg.create_task(self._receive_audio())
                     tg.create_task(self._play_audio())
 
+            except KeyboardInterrupt:
+                print("\n🔴 Shutting down...")
+                return
             except Exception as e:
                 print(f"[LEO] ⚠️  Error: {e}")
                 traceback.print_exc()
 
-            print("[LEO] 🔄 Reconnecting in 3s...")
-            await asyncio.sleep(3)
+            # Cancel any running tasks
+            for name, task in list(self._running_tasks.items()):
+                task.cancel()
+                print(f"[LEO] 🛑 Cancelled task: {name}")
+            self._running_tasks.clear()
+
+            self.ui.stop_speaking()
+            self.ui.set_audio_level(0.0)
+
+            print(f"[LEO] 🔄 Reconnecting in {backoff}s...")
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 1.5, max_backoff)
 
 def main():
     ui = LeoUI()
