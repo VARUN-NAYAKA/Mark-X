@@ -780,10 +780,11 @@ class LeoLive:
             frames_per_buffer=CHUNK_SIZE,
         )
 
-        # Track speech state for voice auth (accumulate speech for verification)
-        _speech_buffer = []       # collect speech chunks for voice verification
-        _silence_count = 0        # consecutive silent frames
-        _speech_verified = False  # has current speech been verified as owner?
+        # Voice auth state
+        _speech_buffer = []
+        _silence_count = 0
+        _speech_verified = False
+        _SILENCE_BYTES = b'\x00' * (CHUNK_SIZE * 2)  # silent PCM frame
 
         try:
             while True:
@@ -791,7 +792,7 @@ class LeoLive:
                     stream.read, CHUNK_SIZE, exception_on_overflow=False
                 )
 
-                # Compute RMS
+                # Compute RMS for UI
                 try:
                     samples = struct.unpack(f'<{len(data)//2}h', data)
                     rms = (sum(s*s for s in samples) / len(samples)) ** 0.5
@@ -800,31 +801,36 @@ class LeoLive:
                     rms = 0
                     level = 0
 
-                # ── VAD: only pass frames with speech ──────────────
+                # ── VAD: detect speech (UI only, never block audio) ──
                 is_speech = True
                 if self._vad:
                     try:
-                        is_speech = self._vad.is_speech(data, SEND_SAMPLE_RATE)
+                        # webrtcvad needs 10/20/30ms frames at 16kHz
+                        # Use first 480 samples (30ms) for VAD check
+                        vad_frame = data[:960]  # 480 samples * 2 bytes
+                        is_speech = self._vad.is_speech(vad_frame, SEND_SAMPLE_RATE)
                     except Exception:
-                        is_speech = rms > 300  # fallback to RMS threshold
+                        is_speech = rms > 400  # fallback
 
-                if not is_speech:
+                # Update UI state based on VAD
+                if is_speech and level > 0.03 and not self.ui.speaking:
+                    _silence_count = 0
+                    self.ui.set_listening(True)
+                    self.ui.set_audio_level(level)
+                else:
                     _silence_count += 1
-                    if _silence_count > 30:  # ~1s of silence
+                    if _silence_count > 40:  # ~1.3s silence
                         _speech_buffer.clear()
                         _speech_verified = False
                         if self.ui.listening:
                             self.ui.set_listening(False)
-                    continue  # skip this chunk
 
-                # Reset silence counter on speech
-                _silence_count = 0
+                # ── Voice auth (optional — only if enrolled) ─────────
+                send_data = data  # default: send real audio
 
-                # ── Voice auth: verify speaker ─────────────────────
-                if _HAS_VOICE_AUTH and is_enrolled():
+                if _HAS_VOICE_AUTH and is_enrolled() and is_speech:
                     _speech_buffer.append(data)
 
-                    # Verify after 0.5s of accumulated speech (16 chunks at 512/16kHz)
                     if not _speech_verified and len(_speech_buffer) >= 16:
                         combined = b''.join(_speech_buffer)
                         if is_owner(combined, SEND_SAMPLE_RATE):
@@ -833,20 +839,14 @@ class LeoLive:
                         else:
                             print("[LEO] 🚫 Voice rejected (not owner).")
                             _speech_buffer.clear()
-                            continue  # reject non-owner audio
+                            send_data = _SILENCE_BYTES  # send silence, not skip
 
-                    # If not yet verified, still queue (Gemini needs continuous audio)
-                    # but mark as not-owner if verification eventually fails
                     if len(_speech_buffer) > 16 and not _speech_verified:
                         _speech_buffer.clear()
-                        continue  # reject
+                        send_data = _SILENCE_BYTES  # send silence
 
-                # Update UI
-                if level > 0.05 and not self.ui.speaking:
-                    self.ui.set_listening(True)
-                    self.ui.set_audio_level(level)
-
-                await self.out_queue.put({"data": data, "mime_type": "audio/pcm"})
+                # ── ALWAYS send audio to Gemini (continuous stream) ──
+                await self.out_queue.put({"data": send_data, "mime_type": "audio/pcm"})
         except Exception as e:
             print(f"[LEO] ❌ Mic error: {e}")
             raise
