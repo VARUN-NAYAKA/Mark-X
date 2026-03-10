@@ -828,6 +828,11 @@ class LeoLive:
                         if self.ui.listening:
                             self.ui.set_listening(False)
 
+                # ── Echo suppression: mute mic while LEO speaks ──
+                if self.ui.speaking:
+                    await self.out_queue.put({"data": _SILENCE_BYTES, "mime_type": "audio/pcm"})
+                    continue
+
                 # ── Voice auth (optional — only if enrolled) ─────────
                 send_data = data  # default: send real audio
 

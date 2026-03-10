@@ -47,14 +47,18 @@ def _youtube_play(query: str) -> str:
     if not _HAS_PYAUTOGUI:
         return result + " (Cannot auto-play: pyautogui not installed)"
 
-    # Wait for page to load, then click first video
-    time.sleep(4)
+    # Wait for page to fully load
+    time.sleep(5)
 
-    # Tab to first video result and press Enter
-    # YouTube's first result is typically reachable via Tab presses
-    pyautogui.press("tab", presses=5, interval=0.15)
-    time.sleep(0.3)
-    pyautogui.press("enter")
+    # Get screen size and click the first video thumbnail
+    # On YouTube search results, the first video is roughly at:
+    # x = 40% of screen width, y = 38% of screen height
+    screen_w, screen_h = pyautogui.size()
+    click_x = int(screen_w * 0.40)
+    click_y = int(screen_h * 0.38)
+
+    pyautogui.click(click_x, click_y)
+    time.sleep(1)
 
     return f"Playing YouTube: {query}"
 
