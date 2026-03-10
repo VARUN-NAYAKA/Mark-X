@@ -16,6 +16,24 @@ from memory.memory_manager import load_memory, update_memory, format_memory_for_
 
 from agent.task_queue import get_queue
 
+# Voice auth / noise cancellation
+try:
+    import webrtcvad
+    _HAS_VAD = True
+except ImportError:
+    _HAS_VAD = False
+    print("[LEO] ⚠️ webrtcvad not installed — no noise gate.")
+
+try:
+    from core.voice_auth import (
+        is_available as voice_auth_available,
+        is_enrolled, load_profile, enroll_from_audio, is_owner
+    )
+    _HAS_VOICE_AUTH = voice_auth_available()
+except ImportError:
+    _HAS_VOICE_AUTH = False
+    print("[LEO] ⚠️ resemblyzer not installed — no voice lock.")
+
 from actions.flight_finder import flight_finder
 from actions.open_app         import open_app
 from actions.weather_report   import weather_action
@@ -450,6 +468,21 @@ TOOL_DECLARATIONS = [
 },
 
 {
+    "name": "voice_enroll",
+    "description": (
+        "Register or re-register the owner's voice for voice lock. "
+        "LEO will record 5 seconds of the user speaking and save their voice profile. "
+        "After enrollment, only the owner's voice will be processed. "
+        "Use when user says 'enroll my voice', 'register my voice', 'voice lock', etc."
+    ),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {},
+        "required": []
+    }
+},
+
+{
     "name": "flight_finder",
     "description": (
         "Searches for flights on Google Flights and speaks the best options. "
@@ -480,6 +513,20 @@ class LeoLive:
         self.out_queue      = None
         self._loop          = None
         self._running_tasks = {}   # task_name -> asyncio.Task for parallel exec
+
+        # VAD setup
+        self._vad = None
+        if _HAS_VAD:
+            self._vad = webrtcvad.Vad(2)  # aggressiveness 0-3 (2 = balanced)
+            print("[LEO] 🛡️  Noise gate active (webrtcvad).")
+
+        # Voice auth
+        if _HAS_VOICE_AUTH:
+            if is_enrolled():
+                load_profile()
+                print("[LEO] 🔒 Voice-locked to owner.")
+            else:
+                print("[LEO] 🎤 No voice profile. Say 'enroll my voice' to register.")
 
     def speak(self, text: str):
         """Thread-safe speak — any thread can call this."""
@@ -667,6 +714,31 @@ class LeoLive:
                 )
                 result = r or "Done."
 
+            elif name == "voice_enroll":
+                # Record mic audio for enrollment (5 seconds)
+                if not _HAS_VOICE_AUTH:
+                    result = "Voice auth not available (resemblyzer not installed)."
+                else:
+                    import pyaudio as _pa
+                    import struct as _st
+                    _pya = _pa.PyAudio()
+                    _stream = _pya.open(
+                        format=_pa.paInt16, channels=1, rate=16000,
+                        input=True, frames_per_buffer=512
+                    )
+                    self.ui.write_log("Recording voice for enrollment (5s)...")
+                    chunks = []
+                    for _ in range(int(16000 / 512 * 5)):  # 5 seconds
+                        chunk = _stream.read(512, exception_on_overflow=False)
+                        chunks.append(chunk)
+                    _stream.close()
+                    
+                    success = enroll_from_audio(chunks, 16000)
+                    if success:
+                        result = "Voice enrolled successfully! LEO is now locked to your voice."
+                    else:
+                        result = "Enrollment failed. Please try again in a quieter environment."
+
             elif name == "flight_finder":
                 r = await loop.run_in_executor(
                     None, lambda: flight_finder(parameters=args, player=self.ui)
@@ -707,21 +779,73 @@ class LeoLive:
             input=True,
             frames_per_buffer=CHUNK_SIZE,
         )
+
+        # Track speech state for voice auth (accumulate speech for verification)
+        _speech_buffer = []       # collect speech chunks for voice verification
+        _silence_count = 0        # consecutive silent frames
+        _speech_verified = False  # has current speech been verified as owner?
+
         try:
             while True:
                 data = await asyncio.to_thread(
                     stream.read, CHUNK_SIZE, exception_on_overflow=False
                 )
-                # Compute RMS for UI listening feedback
+
+                # Compute RMS
                 try:
                     samples = struct.unpack(f'<{len(data)//2}h', data)
                     rms = (sum(s*s for s in samples) / len(samples)) ** 0.5
                     level = min(1.0, rms / 12000.0)
-                    if level > 0.05 and not self.ui.speaking:
-                        self.ui.set_listening(True)
-                        self.ui.set_audio_level(level)
                 except Exception:
-                    pass
+                    rms = 0
+                    level = 0
+
+                # ── VAD: only pass frames with speech ──────────────
+                is_speech = True
+                if self._vad:
+                    try:
+                        is_speech = self._vad.is_speech(data, SEND_SAMPLE_RATE)
+                    except Exception:
+                        is_speech = rms > 300  # fallback to RMS threshold
+
+                if not is_speech:
+                    _silence_count += 1
+                    if _silence_count > 30:  # ~1s of silence
+                        _speech_buffer.clear()
+                        _speech_verified = False
+                        if self.ui.listening:
+                            self.ui.set_listening(False)
+                    continue  # skip this chunk
+
+                # Reset silence counter on speech
+                _silence_count = 0
+
+                # ── Voice auth: verify speaker ─────────────────────
+                if _HAS_VOICE_AUTH and is_enrolled():
+                    _speech_buffer.append(data)
+
+                    # Verify after 0.5s of accumulated speech (16 chunks at 512/16kHz)
+                    if not _speech_verified and len(_speech_buffer) >= 16:
+                        combined = b''.join(_speech_buffer)
+                        if is_owner(combined, SEND_SAMPLE_RATE):
+                            _speech_verified = True
+                            print("[LEO] 🔓 Owner verified.")
+                        else:
+                            print("[LEO] 🚫 Voice rejected (not owner).")
+                            _speech_buffer.clear()
+                            continue  # reject non-owner audio
+
+                    # If not yet verified, still queue (Gemini needs continuous audio)
+                    # but mark as not-owner if verification eventually fails
+                    if len(_speech_buffer) > 16 and not _speech_verified:
+                        _speech_buffer.clear()
+                        continue  # reject
+
+                # Update UI
+                if level > 0.05 and not self.ui.speaking:
+                    self.ui.set_listening(True)
+                    self.ui.set_audio_level(level)
+
                 await self.out_queue.put({"data": data, "mime_type": "audio/pcm"})
         except Exception as e:
             print(f"[LEO] ❌ Mic error: {e}")
