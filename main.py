@@ -291,21 +291,24 @@ TOOL_DECLARATIONS = [
     {
         "name": "browser_control",
         "description": (
-            "Controls the web browser. Use for: opening websites, searching the web, "
-            "clicking elements, filling forms, scrolling, finding cheapest products, "
-            "booking flights, any web-based task."
+            "Controls the default web browser. Opens URLs, searches the web, plays YouTube videos. "
+            "This opens in the user's DEFAULT browser (Edge/Chrome). "
+            "For YouTube: use action 'youtube_play' with a search query to auto-play the first result. "
+            "For websites: use action 'go_to' with a URL. "
+            "For web search: use action 'search' with a query."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "go_to | search | click | type | scroll | fill_form | smart_click | smart_type | get_text | press | close"},
-                "url":         {"type": "STRING", "description": "URL for go_to action"},
-                "query":       {"type": "STRING", "description": "Search query for search action"},
-                "selector":    {"type": "STRING", "description": "CSS selector for click/type"},
-                "text":        {"type": "STRING", "description": "Text to click or type"},
-                "description": {"type": "STRING", "description": "Element description for smart_click/smart_type"},
+                "action":      {"type": "STRING", "description": "go_to | search | youtube_play | click | type | scroll | press | close"},
+                "url":         {"type": "STRING", "description": "URL for go_to (e.g. https://youtube.com)"},
+                "query":       {"type": "STRING", "description": "Search query for search or youtube_play"},
+                "engine":      {"type": "STRING", "description": "Search engine: google | bing | duckduckgo | youtube (default: google)"},
+                "text":        {"type": "STRING", "description": "Text for click or type action"},
+                "x":           {"type": "INTEGER", "description": "X coordinate for click"},
+                "y":           {"type": "INTEGER", "description": "Y coordinate for click"},
                 "direction":   {"type": "STRING", "description": "up or down for scroll"},
-                "key":         {"type": "STRING", "description": "Key name for press action"},
+                "key":         {"type": "STRING", "description": "Key name for press action (Enter, Escape, Tab)"},
             },
             "required": ["action"]
         }
