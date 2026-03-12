@@ -50,6 +50,8 @@ from actions.code_helper      import code_helper
 from actions.dev_agent        import dev_agent
 from actions.web_search       import web_search as web_search_action
 from actions.computer_control import computer_control
+from actions.spotify_control  import spotify_control
+from actions.whatsapp_call    import whatsapp_call
 
 def get_base_dir():
     if getattr(sys, "frozen", False):
@@ -157,16 +159,22 @@ TOOL_DECLARATIONS = [
     {
         "name": "open_app",
         "description": (
-            "Opens any application on the Windows computer. "
-            "Use this whenever the user asks to open, launch, or start any app, "
-            "website, or program. Always call this tool — never just say you opened it."
+            "Opens or CLOSES a specific named application on the Windows computer. "
+            "Use this whenever the user asks to open, launch, start, CLOSE, QUIT, or KILL "
+            "a SPECIFIC app by name (e.g. 'close Edge', 'quit Chrome', 'open Spotify'). "
+            "For closing: uses taskkill to close the named process — does NOT affect the foreground window. "
+            "Always call this tool — never just say you opened/closed it."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "app_name": {
                     "type": "STRING",
-                    "description": "Exact name of the application (e.g. 'WhatsApp', 'Chrome', 'Spotify')"
+                    "description": "Exact name of the application (e.g. 'WhatsApp', 'Chrome', 'Edge', 'Spotify')"
+                },
+                "action": {
+                    "type": "STRING",
+                    "description": "'open' (default) or 'close' — use 'close' when user wants to quit/kill/close a named app"
                 }
             },
             "required": ["app_name"]
@@ -226,8 +234,9 @@ TOOL_DECLARATIONS = [
     {
     "name": "youtube_video",
     "description": (
-        "Controls YouTube. Use for: playing videos, summarizing a video's content, "
-        "getting video info, or showing trending videos."
+        "Controls YouTube. Use for: playing VIDEOS (not music), summarizing a video's content, "
+        "getting video info, or showing trending videos. "
+        "For MUSIC/SONGS, use spotify_control instead."
     ),
     "parameters": {
         "type": "OBJECT",
@@ -271,9 +280,12 @@ TOOL_DECLARATIONS = [
     {
     "name": "computer_settings",
     "description": (
-        "Controls the computer: volume, brightness, window management, keyboard shortcuts, "
-        "typing text on screen, closing apps, fullscreen, dark mode, WiFi, restart, shutdown, "
+        "Controls the computer: volume, brightness (up/down/set%), WiFi (toggle/on/off), "
+        "Bluetooth (toggle/on/off), window management, keyboard shortcuts, "
+        "typing text on screen, fullscreen, dark mode, restart, shutdown, "
         "scrolling, tab management, zoom, screenshots, lock screen, refresh/reload page. "
+        "close_app here means Alt+F4 the CURRENT foreground window — NOT a named app. "
+        "To close a SPECIFIC app by name (e.g. 'close Edge'), use open_app with action='close'. "
         "ALSO use for repeated actions: 'refresh 10 times', 'reload page 5 times' → action: reload_n, value: 10. "
         "Use for ANY single computer control command — even if repeated N times. "
         "NEVER route simple computer commands to agent_task."
@@ -504,6 +516,55 @@ TOOL_DECLARATIONS = [
         },
         "required": ["origin", "destination", "date"]
     }
+},
+{
+    "name": "spotify_control",
+    "description": (
+        "Controls Spotify music playback. Use this for ANY music/song request: "
+        "play a song, pause, resume, skip, previous, queue a song, check what's playing, "
+        "set Spotify volume, toggle shuffle/repeat. "
+        "ALWAYS use this for music — NOT youtube_video."
+    ),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "action": {
+                "type": "STRING",
+                "description": "play | pause | resume | next | skip | previous | queue | current | volume | shuffle | repeat"
+            },
+            "query": {
+                "type": "STRING",
+                "description": "Song name, artist, or album to play/queue"
+            },
+            "volume": {
+                "type": "INTEGER",
+                "description": "Volume level 0-100 (for volume action only)"
+            }
+        },
+        "required": ["action"]
+    }
+},
+{
+    "name": "whatsapp_call",
+    "description": (
+        "Makes a voice or video call via WhatsApp Desktop. "
+        "Use when user says 'call someone', 'voice call X', 'video call X on WhatsApp'. "
+        "WhatsApp Desktop must be running and logged in."
+    ),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "action": {
+                "type": "STRING",
+                "description": "call (voice) or video_call"
+            },
+            "contact": {
+                "type": "STRING",
+                "description": "Name of the contact to call as saved in WhatsApp"
+            }
+        },
+        "required": ["contact"]
+    }
 }
 ]
 
@@ -716,6 +777,18 @@ class LeoLive:
                     None, lambda: computer_control(parameters=args, player=self.ui)
                 )
                 result = r or "Done."
+
+            elif name == "spotify_control":
+                r = await loop.run_in_executor(
+                    None, lambda: spotify_control(parameters=args, player=self.ui)
+                )
+                result = r or "Done."
+
+            elif name == "whatsapp_call":
+                r = await loop.run_in_executor(
+                    None, lambda: whatsapp_call(parameters=args, player=self.ui)
+                )
+                result = r or "Call initiated."
 
             elif name == "voice_enroll":
                 # Record mic audio for enrollment (5 seconds)
@@ -1004,6 +1077,7 @@ class LeoLive:
                     self._running_tasks = {}
 
                     print("[LEO] ✅ Connected.")
+                    self.ui.status_text = "ONLINE"
                     self.ui.write_log("LEO online.")
                     backoff = 3  # reset on successful connect
 

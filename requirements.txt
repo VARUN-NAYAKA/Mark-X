@@ -19,3 +19,5 @@ duckduckgo-search
 youtube-transcript-api
 webrtcvad-wheels
 resemblyzer
+screen-brightness-control
+spotipy

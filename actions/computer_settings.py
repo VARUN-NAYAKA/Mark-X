@@ -92,23 +92,54 @@ def volume_set(value: int):
         subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{value}%"])
         return
 
+try:
+    import screen_brightness_control as sbc
+    _HAS_SBC = True
+except ImportError:
+    _HAS_SBC = False
+
 def brightness_up():
-    if _OS == "Windows":
-        pyautogui.hotkey("win", "a")
-        time.sleep(0.3)
+    if _HAS_SBC:
+        try:
+            current = sbc.get_brightness()[0]
+            new_val = min(100, current + 10)
+            sbc.set_brightness(new_val)
+            print(f"[Settings] 🔆 Brightness → {new_val}%")
+        except Exception as e:
+            print(f"[Settings] ⚠️ Brightness up failed: {e}")
     elif _OS == "Darwin":
         subprocess.run(["osascript", "-e", "tell application \"System Events\" to key code 144"])
     else:
         subprocess.run(["brightnessctl", "set", "+10%"])
 
 def brightness_down():
-    if _OS == "Windows":
-        pyautogui.hotkey("win", "a")
-        time.sleep(0.3)
+    if _HAS_SBC:
+        try:
+            current = sbc.get_brightness()[0]
+            new_val = max(0, current - 10)
+            sbc.set_brightness(new_val)
+            print(f"[Settings] 🔅 Brightness → {new_val}%")
+        except Exception as e:
+            print(f"[Settings] ⚠️ Brightness down failed: {e}")
     elif _OS == "Darwin":
         subprocess.run(["osascript", "-e", "tell application \"System Events\" to key code 145"])
     else:
         subprocess.run(["brightnessctl", "set", "10%-"])
+
+def brightness_set(value: int):
+    value = max(0, min(100, value))
+    if _HAS_SBC:
+        try:
+            sbc.set_brightness(value)
+            print(f"[Settings] 🔆 Brightness → {value}%")
+        except Exception as e:
+            print(f"[Settings] ⚠️ Brightness set failed: {e}")
+    elif _OS == "Darwin":
+        subprocess.run(["osascript", "-e", f"tell application \"System Events\" to key code 144"])
+    else:
+        subprocess.run(["brightnessctl", "set", f"{value}%"])
+
+
 
 
 def close_app():
@@ -296,7 +327,7 @@ def take_screenshot():
 
 def lock_screen():
     if _OS == "Windows":
-        pyautogui.hotkey("win", "l")
+        subprocess.Popen(["rundll32.exe", "user32.dll,LockWorkStation"])
     elif _OS == "Darwin":
         subprocess.run(["pmset", "displaysleepnow"])
     else:
@@ -334,6 +365,19 @@ def sleep_display():
     else:
         subprocess.run(["xset", "dpms", "force", "off"])
 
+def sleep_pc():
+    """Put the computer to sleep (suspend/standby)."""
+    if _OS == "Windows":
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-Command",
+             "Add-Type -AssemblyName System.Windows.Forms; "
+             "[System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)"]
+        )
+    elif _OS == "Darwin":
+        subprocess.run(["pmset", "sleepnow"])
+    else:
+        subprocess.run(["systemctl", "suspend"])
+
 def restart_computer():
     if _OS == "Windows":
         subprocess.run(["shutdown", "/r", "/t", "5"])
@@ -360,12 +404,69 @@ def dark_mode():
 
 def toggle_wifi():
     if _OS == "Windows":
-        pyautogui.hotkey("win", "a")
-        time.sleep(0.3)
+        try:
+            # Check current state
+            result = subprocess.run(
+                ["netsh", "interface", "show", "interface", "name=Wi-Fi"],
+                capture_output=True, text=True, timeout=5
+            )
+            if "Disabled" in result.stdout or "Deaktiviert" in result.stdout:
+                subprocess.run(["netsh", "interface", "set", "interface", "Wi-Fi", "enabled"],
+                               capture_output=True, timeout=5)
+                print("[Settings] 📶 WiFi → ON")
+            else:
+                subprocess.run(["netsh", "interface", "set", "interface", "Wi-Fi", "disabled"],
+                               capture_output=True, timeout=5)
+                print("[Settings] 📶 WiFi → OFF")
+        except Exception as e:
+            print(f"[Settings] ⚠️ WiFi toggle failed: {e}")
     elif _OS == "Darwin":
         subprocess.run(["networksetup", "-setairportpower", "en0", "toggle"])
     else:
         subprocess.run(["nmcli", "radio", "wifi"])
+
+def wifi_on():
+    if _OS == "Windows":
+        subprocess.run(["netsh", "interface", "set", "interface", "Wi-Fi", "enabled"],
+                       capture_output=True, timeout=5)
+        print("[Settings] 📶 WiFi → ON")
+
+def wifi_off():
+    if _OS == "Windows":
+        subprocess.run(["netsh", "interface", "set", "interface", "Wi-Fi", "disabled"],
+                       capture_output=True, timeout=5)
+        print("[Settings] 📶 WiFi → OFF")
+
+def toggle_bluetooth():
+    if _OS == "Windows":
+        try:
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Add-Type -AssemblyName System.Runtime.WindowsRuntime; "
+                 "$asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | "
+                 "Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and "
+                 "$_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]; "
+                 "Function Await($WinRtTask, $ResultType) { "
+                 "$asTask = $asTaskGeneric.MakeGenericMethod($ResultType); "
+                 "$netTask = $asTask.Invoke($null, @($WinRtTask)); $netTask.Wait(-1) | Out-Null; "
+                 "$netTask.Result }; "
+                 "[Windows.Devices.Radios.Radio,Windows.System.Devices,ContentType=WindowsRuntime] | Out-Null; "
+                 "$radios = Await ([Windows.Devices.Radios.Radio]::GetRadiosAsync()) "
+                 "([System.Collections.Generic.IReadOnlyList[Windows.Devices.Radios.Radio]]); "
+                 "$bt = $radios | Where-Object { $_.Kind -eq 'Bluetooth' }; "
+                 "if ($bt.State -eq 'On') { Await ($bt.SetStateAsync('Off')) "
+                 "([Windows.Devices.Radios.RadioAccessStatus]) } "
+                 "else { Await ($bt.SetStateAsync('On')) "
+                 "([Windows.Devices.Radios.RadioAccessStatus]) }"],
+                capture_output=True, timeout=10
+            )
+            print("[Settings] 🔵 Bluetooth toggled")
+        except Exception as e:
+            print(f"[Settings] ⚠️ Bluetooth toggle failed: {e}")
+    elif _OS == "Darwin":
+        subprocess.run(["blueutil", "--toggle"])
+    else:
+        subprocess.run(["rfkill", "toggle", "bluetooth"])
 
 ACTION_MAP = {
     "volume_up":               volume_up,
@@ -390,6 +491,7 @@ ACTION_MAP = {
     "dimmer":                  brightness_down,
     "dim_screen":              brightness_down,
     "brighten_screen":         brightness_up,
+    "brightness":              brightness_up,
     "sleep_display":           sleep_display,
     "turn_off_screen":         sleep_display,
     "screen_off":              sleep_display,
@@ -398,6 +500,12 @@ ACTION_MAP = {
     "screen_sleep":            sleep_display,
     "monitor_off":             sleep_display,
     "turn_off_monitor":        sleep_display,
+    "sleep":                   sleep_pc,
+    "sleep_pc":                sleep_pc,
+    "sleep_computer":          sleep_pc,
+    "suspend":                 sleep_pc,
+    "standby":                 sleep_pc,
+    "hibernate":               sleep_pc,
     "pause_video":             pause_video,
     "play_video":              pause_video,
     "pause":                   pause_video,
@@ -460,6 +568,19 @@ ACTION_MAP = {
     "toggle_wifi":             toggle_wifi,
     "wifi":                    toggle_wifi,
     "wifi_toggle":             toggle_wifi,
+    "wifi_on":                 wifi_on,
+    "wifi_off":                wifi_off,
+    "turn_on_wifi":            wifi_on,
+    "turn_off_wifi":           wifi_off,
+    "enable_wifi":             wifi_on,
+    "disable_wifi":            wifi_off,
+    "toggle_bluetooth":        toggle_bluetooth,
+    "bluetooth":               toggle_bluetooth,
+    "bluetooth_toggle":        toggle_bluetooth,
+    "bluetooth_on":            toggle_bluetooth,
+    "bluetooth_off":           toggle_bluetooth,
+    "turn_on_bluetooth":       toggle_bluetooth,
+    "turn_off_bluetooth":      toggle_bluetooth,
     "focus_search":            focus_search,
     "address_bar":             focus_search,
     "url_bar":                 focus_search,
@@ -551,6 +672,9 @@ Examples:
 - "shut down" → {{"action": "shutdown", "value": null}}
 - "ekranı kilitle" → {{"action": "lock_screen", "value": null}}
 - "lock the screen" → {{"action": "lock_screen", "value": null}}
+- "lock my PC" → {{"action": "lock", "value": null}}
+- "put PC to sleep" → {{"action": "sleep", "value": null}}
+- "sleep my computer" → {{"action": "sleep", "value": null}}
 - "küçült" → {{"action": "minimize", "value": null}}
 - "minimize the window" → {{"action": "minimize", "value": null}}
 - "büyüt" → {{"action": "maximize", "value": null}}
@@ -559,6 +683,20 @@ Examples:
 - "increase brightness" → {{"action": "brightness_up", "value": null}}
 - "wifi'yi aç" → {{"action": "toggle_wifi", "value": null}}
 - "toggle wifi" → {{"action": "toggle_wifi", "value": null}}
+- "turn on wifi" → {{"action": "wifi_on", "value": null}}
+- "turn off wifi" → {{"action": "wifi_off", "value": null}}
+- "toggle bluetooth" → {{"action": "toggle_bluetooth", "value": null}}
+- "turn on bluetooth" → {{"action": "bluetooth_on", "value": null}}
+- "turn off bluetooth" → {{"action": "bluetooth_off", "value": null}}
+- "set brightness to 70" → {{"action": "brightness_set", "value": 70}}
+- "brightness 100" → {{"action": "brightness_set", "value": 100}}
+- "set brightness to max" → {{"action": "brightness_set", "value": 100}}
+- "set brightness to minimum" → {{"action": "brightness_set", "value": 0}}
+- "decrease brightness by half" → {{"action": "brightness_set", "value": "half"}}
+- "full brightness" → {{"action": "brightness_set", "value": 100}}
+- "set brightness to 50 percent" → {{"action": "brightness_set", "value": 50}}
+- "make it brighter" → {{"action": "brightness_up", "value": null}}
+- "dim the screen a little" → {{"action": "brightness_down", "value": null}}
 - "masaüstünü göster" → {{"action": "show_desktop", "value": null}}
 - "show desktop" → {{"action": "show_desktop", "value": null}}
 - "yeni sekme aç" → {{"action": "new_tab", "value": null}}
@@ -636,6 +774,37 @@ def computer_settings(
             return f"Volume set to {value}%."
         except Exception as e:
             return f"Could not set volume: {e}"
+
+    # Intercept: any brightness action with a value → smart brightness_set
+    _BRIGHTNESS_ACTIONS = {
+        "brightness", "brightness_up", "brightness_down",
+        "brighten_screen", "dim_screen", "decrease_brightness",
+        "increase_brightness", "brightness_set",
+    }
+    if action in _BRIGHTNESS_ACTIONS and value is not None:
+        try:
+            val_str = str(value).strip().lower().replace("%", "")
+            if val_str in ("max", "full", "maximum"):
+                target = 100
+            elif val_str in ("min", "minimum", "lowest"):
+                target = 0
+            elif val_str == "half":
+                current = sbc.get_brightness()[0] if _HAS_SBC else 50
+                target = max(0, current // 2)
+            else:
+                target = int(float(val_str))
+            target = max(0, min(100, target))
+            brightness_set(target)
+            return f"Brightness set to {target}%."
+        except Exception as e:
+            return f"Could not set brightness: {e}"
+
+    if action == "brightness_set":
+        try:
+            brightness_set(50)
+            return "Brightness set to 50%."
+        except Exception as e:
+            return f"Could not set brightness: {e}"
 
     if action in ("type_text", "write_on_screen", "type", "write"):
         text = str(value or params.get("text", ""))
