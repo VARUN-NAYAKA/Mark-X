@@ -106,13 +106,16 @@ def _press_key(key: str) -> str:
     return f"Pressed: {key}"
 
 
-def _scroll(direction: str = "down", amount: int = 3) -> str:
+def _scroll(direction: str = "down", amount: int = 500) -> str:
     """Scroll the page."""
     if not _HAS_PYAUTOGUI:
         return "pyautogui not available"
+    # Move mouse to center of screen so scroll targets the main content area
+    screen_w, screen_h = pyautogui.size()
+    pyautogui.moveTo(screen_w // 2, screen_h // 2)
     clicks = amount if direction == "up" else -amount
     pyautogui.scroll(clicks)
-    return f"Scrolled {direction} by {amount}"
+    return f"Scrolled {direction}"
 
 
 def browser_control(

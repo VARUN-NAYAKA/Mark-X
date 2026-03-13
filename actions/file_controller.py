@@ -7,11 +7,17 @@ from datetime import datetime
 import send2trash
 
 def _get_desktop() -> Path:
-    """Returns desktop path — works on Windows, Mac, Linux."""
+    """Returns desktop path — auto-detects OneDrive redirect on Windows."""
+    onedrive = Path.home() / "OneDrive" / "Desktop"
+    if onedrive.exists():
+        return onedrive
     return Path.home() / "Desktop"
 
 
 def _get_downloads() -> Path:
+    onedrive = Path.home() / "OneDrive" / "Downloads"
+    if onedrive.exists():
+        return onedrive
     return Path.home() / "Downloads"
 
 
@@ -19,12 +25,13 @@ def _resolve_path(raw: str) -> Path:
     """
     Resolves a path from user input.
     Supports shortcuts: 'desktop', 'downloads', 'documents', 'home'
+    Bare filenames default to Desktop.
     """
     shortcuts = {
-        "desktop":   Path.home() / "Desktop",
-        "downloads": Path.home() / "Downloads",
-        "documents": Path.home() / "Documents",
-        "pictures":  Path.home() / "Pictures",
+        "desktop":   _get_desktop(),
+        "downloads": _get_downloads(),
+        "documents": Path.home() / "OneDrive" / "Documents" if (Path.home() / "OneDrive" / "Documents").exists() else Path.home() / "Documents",
+        "pictures":  Path.home() / "OneDrive" / "Pictures" if (Path.home() / "OneDrive" / "Pictures").exists() else Path.home() / "Pictures",
         "music":     Path.home() / "Music",
         "videos":    Path.home() / "Videos",
         "home":      Path.home(),
@@ -32,7 +39,17 @@ def _resolve_path(raw: str) -> Path:
     lower = raw.strip().lower()
     if lower in shortcuts:
         return shortcuts[lower]
-    return Path(raw).expanduser()
+
+    # Check if it starts with a shortcut like "desktop/myfile.txt"
+    parts = raw.strip().replace("\\", "/").split("/", 1)
+    if parts[0].lower() in shortcuts and len(parts) > 1:
+        return shortcuts[parts[0].lower()] / parts[1]
+
+    p = Path(raw).expanduser()
+    # If it's a bare filename (no directory), default to Desktop
+    if not p.is_absolute() and str(p.parent) == ".":
+        return _get_desktop() / p.name
+    return p
 
 
 def _format_size(bytes_size: int) -> str:
@@ -78,9 +95,12 @@ def create_file(path: str, content: str = "") -> str:
     """Creates a new file with optional content."""
     try:
         target = Path(path).expanduser()
+        # If path is just a filename with no directory, default to Desktop
+        if not target.is_absolute() and str(target.parent) == ".":
+            target = _get_desktop() / target.name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        return f"File created: {target.name}"
+        return f"File created: {target} (saved to {target.parent})"
     except Exception as e:
         return f"Could not create file: {e}"
 

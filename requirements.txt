@@ -21,3 +21,4 @@ webrtcvad-wheels
 resemblyzer
 screen-brightness-control
 spotipy
+psutil

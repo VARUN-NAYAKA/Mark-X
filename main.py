@@ -86,7 +86,7 @@ def _load_system_prompt() -> str:
 
 _memory_turn_counter  = 0
 _memory_turn_lock     = threading.Lock()
-_MEMORY_EVERY_N_TURNS = 5
+_MEMORY_EVERY_N_TURNS = 10
 _last_memory_input    = ""
 
 
@@ -116,7 +116,6 @@ def _update_memory_async(user_text: str, leo_text: str) -> None:
 
     try:
         import google.generativeai as genai
-        genai.configure(api_key=_get_api_key())
         model = genai.GenerativeModel("gemini-2.5-flash-lite")
 
         check = model.generate_content(
@@ -196,7 +195,12 @@ TOOL_DECLARATIONS = [
 },
     {
         "name": "weather_report",
-        "description": "Gets real-time weather information for a city.",
+        "description": (
+            "Gets real-time weather information for a city. "
+            "Opens a Google weather search in the browser. "
+            "DO NOT call screen_process after this — the weather result is already returned. "
+            "Just read the returned text and reply to the user directly."
+        ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
@@ -330,13 +334,16 @@ TOOL_DECLARATIONS = [
         "description": (
             "Manages files and folders. Use for: listing files, creating/deleting/moving/copying "
             "files, reading file contents, finding files by name or extension, checking disk usage, "
-            "organizing the desktop, getting file info."
+            "organizing the desktop, getting file info. "
+            "IMPORTANT: When creating files, ALWAYS provide the full path in the 'path' parameter. "
+            "Use 'desktop/filename.txt' to save to Desktop, 'downloads/filename.txt' for Downloads, etc. "
+            "Never pass just a bare filename like 'file.txt' — always include the location."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "action":      {"type": "STRING", "description": "list | create_file | create_folder | delete | move | copy | rename | read | write | find | largest | disk_usage | organize_desktop | info"},
-                "path":        {"type": "STRING", "description": "File/folder path or shortcut: desktop, downloads, documents, home"},
+                "path":        {"type": "STRING", "description": "File/folder path or shortcut: desktop, downloads, documents, home. For create_file, use 'desktop/myfile.txt' format."},
                 "destination": {"type": "STRING", "description": "Destination path for move/copy"},
                 "new_name":    {"type": "STRING", "description": "New name for rename"},
                 "content":     {"type": "STRING", "description": "Content for create_file/write"},
@@ -565,6 +572,26 @@ TOOL_DECLARATIONS = [
         },
         "required": ["contact"]
     }
+},
+{
+    "name": "switch_ui",
+    "description": (
+        "Switch LEO's visual interface between two modes. "
+        "UI 1 = classic monochrome sphere. "
+        "UI 2 = premium dashboard with system stats, Spotify widget, conversations. "
+        "Use when user says 'switch to UI 1', 'switch to UI 2', 'dashboard mode', "
+        "'classic mode', 'change interface', etc."
+    ),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "mode": {
+                "type": "INTEGER",
+                "description": "1 for classic sphere, 2 for premium dashboard"
+            }
+        },
+        "required": ["mode"]
+    }
 }
 ]
 
@@ -783,12 +810,40 @@ class LeoLive:
                     None, lambda: spotify_control(parameters=args, player=self.ui)
                 )
                 result = r or "Done."
+                # Update dashboard Spotify widget in background
+                def _bg_spotify_update():
+                    try:
+                        from actions.spotify_control import _get_spotify
+                        _sp = _get_spotify()
+                        if _sp:
+                            _pb = _sp.current_playback()
+                            if _pb and _pb.get("item"):
+                                self.ui.update_spotify_info({
+                                    "track": _pb["item"].get("name", ""),
+                                    "artist": _pb["item"]["artists"][0]["name"] if _pb["item"].get("artists") else "",
+                                    "album": _pb["item"].get("album", {}).get("name", ""),
+                                    "progress": (_pb.get("progress_ms", 0) or 0) // 1000,
+                                    "duration": (_pb["item"].get("duration_ms", 0) or 0) // 1000,
+                                    "is_playing": _pb.get("is_playing", False),
+                                })
+                    except Exception:
+                        pass
+                threading.Thread(target=_bg_spotify_update, daemon=True).start()
 
             elif name == "whatsapp_call":
                 r = await loop.run_in_executor(
                     None, lambda: whatsapp_call(parameters=args, player=self.ui)
                 )
                 result = r or "Call initiated."
+
+            elif name == "switch_ui":
+                mode = args.get("mode", 1)
+                try:
+                    mode = int(mode)
+                except (ValueError, TypeError):
+                    mode = 1
+                self.ui.switch_ui(mode)
+                result = f"Switched to UI {mode}."
 
             elif name == "voice_enroll":
                 # Record mic audio for enrollment (5 seconds)

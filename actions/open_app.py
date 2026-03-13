@@ -163,6 +163,7 @@ PROCESS_MAP: dict[str, list[str]] = {
     "zoom":               ["Zoom.exe"],
     "teams":              ["ms-teams.exe", "Teams.exe"],
     "slack":              ["slack.exe"],
+    "roblox":             ["RobloxPlayerBeta.exe"],
 }
 
 
@@ -357,68 +358,6 @@ def _close_app_core(raw_name: str) -> str:
 
 
 # ============================================================
-#  System Commands (shutdown, restart, lock, sleep)
-# ============================================================
-
-def _system_command(command: str) -> str:
-    """Shutdown, restart, lock, sleep, hibernate, sign out."""
-    cmd = command.strip().lower()
-
-    try:
-        if cmd in ["shutdown", "shut down", "power off", "turn off",
-                    "shutdown pc", "turn off pc", "turn off the computer"]:
-            subprocess.Popen(["shutdown", "/s", "/t", "5"], shell=True)
-            return "Shutting down your computer in 5 seconds."
-
-        elif cmd in ["restart", "reboot", "re start"]:
-            subprocess.Popen(["shutdown", "/r", "/t", "5"], shell=True)
-            return "Restarting your computer in 5 seconds."
-
-        elif cmd in ["cancel shutdown", "cancel restart", "cancel", "abort"]:
-            subprocess.run(["shutdown", "/a"], capture_output=True)
-            return "Shutdown cancelled."
-
-        elif cmd in ["lock", "lock screen", "lock computer", "lock the screen",
-                      "lock pc", "lock my pc"]:
-            subprocess.Popen(["rundll32.exe", "user32.dll,LockWorkStation"])
-            return "Locking your screen."
-
-        elif cmd in ["sleep", "sleep mode", "sleep pc", "put pc to sleep",
-                      "put my pc to sleep", "put computer to sleep"]:
-            import ctypes, threading
-            def _do_sleep():
-                import time as _t
-                _t.sleep(4)
-                HWND_BROADCAST  = 0xFFFF
-                WM_SYSCOMMAND   = 0x0112
-                SC_MONITORPOWER = 0xF170
-                MONITOR_OFF     = 2
-                ctypes.windll.user32.SendMessageW(
-                    HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, MONITOR_OFF
-                )
-            threading.Thread(target=_do_sleep, daemon=True).start()
-            return "Putting your computer to sleep. Goodnight!"
-
-        elif cmd in ["hibernate", "hibernate pc"]:
-            subprocess.Popen(
-                ["powershell", "-NoProfile", "-Command",
-                 "Add-Type -AssemblyName System.Windows.Forms; "
-                 "[System.Windows.Forms.Application]::SetSuspendState('Hibernate', $false, $false)"]
-            )
-            return "Hibernating your computer."
-
-        elif cmd in ["sign out", "log out", "log off", "sign off", "logout"]:
-            subprocess.Popen(["shutdown", "/l"], shell=True)
-            return "Signing you out."
-
-        else:
-            return f"I don't know how to do '{cmd}'."
-
-    except Exception as e:
-        return f"System command failed: {e}"
-
-
-# ============================================================
 #  Public Entry Point (called by main.py)
 # ============================================================
 
@@ -433,7 +372,6 @@ def open_app(
     url      = params.get("url", "").strip()
     action   = params.get("action", "open").strip().lower()
 
-    # URL shortcut
     if url:
         webbrowser.open(url)
         return f"Opened {url} in your default browser."
@@ -441,11 +379,7 @@ def open_app(
     if not app_name:
         return "What app should I open?"
 
-    # Route by action
     if action == "close":
         return _close_app_core(app_name)
-    elif action in ["shutdown", "restart", "lock", "sleep",
-                     "hibernate", "sign out", "log out"]:
-        return _system_command(action)
     else:
         return _open_app_core(app_name)
